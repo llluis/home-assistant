@@ -1,0 +1,241 @@
+"""
+Support for HydroQuebec.
+
+Get data from 'My Consumption Profile' page:
+https://www.hydroquebec.com/portail/en/group/clientele/portrait-de-consommation
+
+For more details about this platform, please refer to the documentation at
+https://home-assistant.io/components/sensor.hydroquebec/
+"""
+import logging
+import asyncio
+from datetime import timedelta
+
+import voluptuous as vol
+
+from homeassistant.components.sensor import PLATFORM_SCHEMA
+from homeassistant.const import (
+    CONF_USERNAME,
+    CONF_PASSWORD,
+    ENERGY_KILO_WATT_HOUR,
+    CONF_NAME,
+    CONF_MONITORED_VARIABLES,
+    TEMP_CELSIUS,
+)
+from homeassistant.helpers.entity import Entity
+from homeassistant.util import Throttle
+import homeassistant.helpers.config_validation as cv
+
+_LOGGER = logging.getLogger(__name__)
+
+KILOWATT_HOUR = ENERGY_KILO_WATT_HOUR
+PRICE = "CAD"
+DAYS = "days"
+CONF_CONTRACT = "contract"
+
+DEFAULT_NAME = "HydroQuebec"
+
+REQUESTS_TIMEOUT = 15
+MIN_TIME_BETWEEN_UPDATES = timedelta(hours=1)
+SCAN_INTERVAL = timedelta(hours=1)
+
+SENSOR_TYPES = {
+    # "balance": ["Balance", PRICE, "mdi:square-inc-cash"],
+    # "period_total_bill": ["Period total bill", PRICE, "mdi:square-inc-cash"],
+    # "period_length": ["Period length", DAYS, "mdi:calendar-today"],
+    # "period_total_days": ["Period total days", DAYS, "mdi:calendar-today"],
+    # "period_mean_daily_bill": ["Period mean daily bill", PRICE, "mdi:square-inc-cash"],
+    # "period_mean_daily_consumption": [
+    #     "Period mean daily consumption",
+    #     KILOWATT_HOUR,
+    #     "mdi:flash",
+    # ],
+    # "period_total_consumption": [
+    #     "Period total consumption",
+    #     KILOWATT_HOUR,
+    #     "mdi:flash",
+    # ],
+    # "period_lower_price_consumption": [
+    #     "Period lower price consumption",
+    #     KILOWATT_HOUR,
+    #     "mdi:flash",
+    # ],
+    # "period_higher_price_consumption": [
+    #     "Period higher price consumption",
+    #     KILOWATT_HOUR,
+    #     "mdi:flash",
+    # ],
+    # "period_average_temperature": [
+    #     "Period average temperature",
+    #     TEMP_CELSIUS,
+    #     "mdi:thermometer",
+    # ],
+    # "monthly_total_consumption": [
+    #     "Monthly total consumption",
+    #     KILOWATT_HOUR,
+    #     "mdi:flash",
+    #     'total_consumption',
+    # ],
+    "yesterday_total_consumption": [
+        "Yesterday total consumption",
+        KILOWATT_HOUR,
+        "mdi:flash",
+        'total_consumption',
+    ],
+    "yesterday_lower_price_consumption": [
+        "Yesterday lower price consumption",
+        KILOWATT_HOUR,
+        "mdi:flash",
+        'lower_price_consumption',
+    ],
+    "yesterday_higher_price_consumption": [
+        "Yesterday higher price consumption",
+        KILOWATT_HOUR,
+        "mdi:flash",
+        'higher_price_consumption',
+    ],
+    "yesterday_average_temperature": [
+        "Yesterday average temperature",
+        TEMP_CELSIUS,
+        "mdi:thermometer",
+        'average_temperature',
+    ],
+}
+
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_MONITORED_VARIABLES): vol.All(
+            cv.ensure_list, [vol.In(SENSOR_TYPES)]
+        ),
+        vol.Required(CONF_USERNAME): cv.string,
+        vol.Required(CONF_PASSWORD): cv.string,
+        vol.Required(CONF_CONTRACT): cv.string,
+        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+    }
+)
+
+
+async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+    """Set up the HydroQuebec sensor."""
+    # Create a data fetcher to support all of the configured sensors. Then make
+    # the first call to init the data.
+
+    username = config.get(CONF_USERNAME)
+    password = config.get(CONF_PASSWORD)
+    contract = config.get(CONF_CONTRACT)
+    name = config.get(CONF_NAME)
+
+    httpsession = hass.helpers.aiohttp_client.async_get_clientsession()
+    hydroquebec_data = HydroquebecData(username, password, httpsession, contract)
+
+    contracts = await hydroquebec_data.get_contract_list()
+    if not contracts:
+        _LOGGER.warn("No contracts found for this account.")
+        return
+    await hydroquebec_data.async_update()
+
+    sensors = []
+    for variable in config[CONF_MONITORED_VARIABLES]:
+        sensors.append(HydroQuebecSensor(hydroquebec_data, variable, name))
+
+    async_add_entities(sensors, True)
+
+
+    try:
+        from . import mqtt_daemon
+        mqtt = MqttHydroQuebec()
+        asyncio.run(mqtt.async_run())
+    except:
+        _LOGGER.exception("MQTT failed")
+        pass
+
+    return True
+
+
+class HydroQuebecSensor(Entity):
+    """Implementation of a HydroQuebec sensor."""
+
+    def __init__(self, hydroquebec_data, sensor_type, name):
+        """Initialize the sensor."""
+        self.client_name = name
+        self.type = sensor_type
+        self._name = SENSOR_TYPES[sensor_type][0]
+        self._unit_of_measurement = SENSOR_TYPES[sensor_type][1]
+        self._icon = SENSOR_TYPES[sensor_type][2]
+        self.hydroquebec_data = hydroquebec_data
+        self._state = None
+
+    @property
+    def name(self):
+        """Return the name of the sensor."""
+        return f"{self.client_name} {self._name}"
+
+    @property
+    def state(self):
+        """Return the state of the sensor."""
+        return self._state
+
+    @property
+    def unit_of_measurement(self):
+        """Return the unit of measurement of this entity, if any."""
+        return self._unit_of_measurement
+
+    @property
+    def icon(self):
+        """Icon to use in the frontend, if any."""
+        return self._icon
+
+    async def async_update(self):
+        """Get the latest data from Hydroquebec and update the state."""
+        await self.hydroquebec_data.async_update()
+
+        try:
+            curr = self.hydroquebec_data.data.current_daily_data
+            yesterday_date = list(curr.keys())[0]
+            self._state = round(curr[yesterday_date][SENSOR_TYPES[self.type][3]], 2)
+        except AttributeError:
+            pass
+
+class HydroquebecData:
+    """Get data from HydroQuebec."""
+
+    def __init__(self, username, password, httpsession, contract=None):
+        """Initialize the data object."""
+        from pyhydroquebec.client import HydroQuebecClient
+
+        self.client = HydroQuebecClient(
+            username, password, REQUESTS_TIMEOUT, httpsession
+        )
+
+        self._contract = contract
+        self.data = {}
+
+    async def get_contract_list(self):
+        """Return the contract list."""
+        await self.client.login()
+        ret = [c.contract_id for c in self.client.customers]
+        # await self.client.close_session()
+        return ret
+        
+
+    @Throttle(MIN_TIME_BETWEEN_UPDATES)
+    async def async_update(self):
+        """Return the latest collected data from HydroQuebec."""
+
+        await self.client.login()
+        for customer in self.client.customers:
+            if customer.contract_id != self._contract and self._contract is not None:
+                continue
+            if self._contract is None:
+                _LOGGER.warn("Contract id not specified, using first available.")
+
+            await customer.fetch_current_period()
+            await customer.fetch_annual_data()
+            await customer.fetch_monthly_data()
+            await customer.fetch_daily_data()
+            # await customer.fetch_hourly_data()
+
+            self.data = customer
+            return
+
+        # await self.client.close_session()
