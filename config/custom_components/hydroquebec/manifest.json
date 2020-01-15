@@ -3,7 +3,7 @@
   "name": "Hydroquebec",
   "documentation": "",
   "requirements": [
-    "https://github.com/llluis/pyhydroquebec/archive/master.zip#pyhydroquebec==3.0.4"
+    "https://github.com/llluis/pyhydroquebec/archive/master.zip#pyhydroquebec==3.0.5"
   ],
   "dependencies": [],
   "codeowners": ["@titilambert", "@llluis"]

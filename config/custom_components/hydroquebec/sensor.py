@@ -2,7 +2,7 @@
 Support for HydroQuebec.
 Official component deprecated after HA 100.3
 Use as custom_component
-pip3 install --target /config/deps --no-dependencies https://github.com/titilambert/pyhydroquebec/archive/master.zip#pyhydroquebec==3.0.0
+pip3 install --target /config/deps --no-dependencies https://github.com/llluis/pyhydroquebec/archive/master.zip#pyhydroquebec==3.0.5
 
 Get data from 'My Consumption Profile' page:
 https://www.hydroquebec.com/portail/en/group/clientele/portrait-de-consommation
@@ -40,10 +40,8 @@ CONF_CONTRACT = "contract"
 DEFAULT_NAME = "HydroQuebec"
 
 REQUESTS_TIMEOUT = 15
-MIN_TIME_BETWEEN_UPDATES = timedelta(hours=3)
-SCAN_INTERVAL = timedelta(hours=3)
-# MIN_TIME_BETWEEN_UPDATES = timedelta(minutes=60)
-# SCAN_INTERVAL = timedelta(minutes=60)
+MIN_TIME_BETWEEN_UPDATES = timedelta(hours=6)
+SCAN_INTERVAL = timedelta(hours=6)
 
 SENSOR_TYPES = {
     "yesterday_total_consumption": [
@@ -115,18 +113,18 @@ class HydroQuebecSensor(Entity):
 
     def __init__(self, hydroquebec_data, sensor_type, name):
         """Initialize the sensor."""
-        self.client_name = name
         self.type = sensor_type
+        self._client_name = name
         self._name = SENSOR_TYPES[sensor_type][0]
         self._unit_of_measurement = SENSOR_TYPES[sensor_type][1]
         self._icon = SENSOR_TYPES[sensor_type][2]
-        self.hydroquebec_data = hydroquebec_data
+        self._hydroquebec_data = hydroquebec_data
         self._state = None
 
     @property
     def name(self):
         """Return the name of the sensor."""
-        return f"{self.client_name} {self._name}"
+        return f"{self._client_name} {self._name}"
 
     @property
     def state(self):
@@ -145,9 +143,9 @@ class HydroQuebecSensor(Entity):
 
     async def async_update(self):
         """Get the latest data from Hydroquebec and update the state."""
-        await self.hydroquebec_data.async_update()
+        await self._hydroquebec_data.async_update()
 
-        curr = self.hydroquebec_data.data.current_daily_data
+        curr = self._hydroquebec_data.get_data().current_daily_data
         yesterday_date = list(curr.keys())[0]
         val = curr[yesterday_date][SENSOR_TYPES[self.type][3]]
         if val is not None:
@@ -162,13 +160,13 @@ class HydroquebecData:
     def __init__(self, username, password, httpsession, contract=None, time_zone='America/Montreal'):
         """Initialize the data object."""
 
-        self.client = HydroQuebecClient(
-            username, password, REQUESTS_TIMEOUT #, httpsession#, 'DEBUG'
+        self._client = HydroQuebecClient(
+            username, password, REQUESTS_TIMEOUT, httpsession #, 'DEBUG'
          )
 
         self._tz = tz.gettz(time_zone)
         self._contract = contract
-        self.data = {}
+        self._data = {}
 
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
@@ -177,9 +175,9 @@ class HydroquebecData:
 
         _LOGGER.debug("Updating HQ sensor")
 
-        await self.client.login()
+        await self._client.login()
 
-        for customer in self.client.customers:
+        for customer in self._client.customers:
             if customer.contract_id != self._contract and self._contract is not None:
                 continue
             if self._contract is None:
@@ -195,8 +193,10 @@ class HydroquebecData:
                 yesterday_str = yesterday.strftime("%Y-%m-%d")
                 await customer.fetch_daily_data(yesterday_str, yesterday_str)
 
-            self.data = customer
-
-            await self.client.close_session()
+            self._data = customer
 
             return
+
+
+    def get_data(self):
+        return self._data
