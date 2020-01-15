@@ -1,0 +1,10 @@
+{
+  "domain": "teslafi",
+  "name": "TeslaFi",
+  "documentation": "",
+  "requirements": [],
+  "dependencies": [],
+  "codeowners": [
+    "@llluis"
+  ]
+}
